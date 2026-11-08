@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZONO Remote</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#071426;color:#fff;font-family:Arial,sans-serif}
+header{background:#102644;padding:20px;text-align:center;border-bottom:2px solid #d5ad55}
+h1{color:#e8c66b;margin:0}
+main{max-width:650px;margin:25px auto;padding:15px}
+.card{background:#102644;border:1px solid #29476b;border-radius:14px;padding:20px;margin:15px 0}
+input{width:100%;padding:13px;margin:8px 0;border-radius:8px;border:1px solid #56708f;background:#071426;color:white}
+button{background:#d5ad55;color:#071426;border:0;padding:13px 18px;border-radius:8px;font-weight:bold;margin:6px 3px;cursor:pointer}
+button.secondary{background:#29476b;color:white}
+small,.muted{color:#a9bbd0}
+.hidden{display:none}
+h2{color:#e8c66b}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header>
+<h1>◆ ZONO REMOTE</h1>
+<p>Secure Device Connection</p>
+</header>
+
+<main>
+<section id="login">
+<div class="card">
+<h2>Login</h2>
+<input id="email" type="email" placeholder="Email Address">
+<input id="password" type="password" placeholder="Password">
+<button onclick="login()">Login</button>
+<p id="loginMsg" class="muted"></p>
+</div>
+</section>
+
+<section id="dashboard" class="hidden">
+<div class="card">
+<h2>Welcome to ZONO</h2>
+<p id="userInfo"></p>
+<p id="roleInfo"></p>
+<button class="secondary" onclick="logout()">Logout</button>
+</div>
+
+<div id="adminPanel" class="hidden">
+<div class="card">
+<h2>Admin Dashboard</h2>
+<p>Connection Requests</p>
+<button onclick="loadRequests()">Refresh Requests</button>
+<div id="requests"></div>
+</div>
+</div>
+
+<div id="secondaryPanel" class="hidden">
+<div class="card">
+<h2>Secondary Phone</h2>
+<p>Generate a secure pairing code.</p>
+<button onclick="createPairCode()">Create Pairing Code</button>
+<div id="pairCode"></div>
+</div>
+</div>
+
+<div id="primaryPanel" class="hidden">
+<div class="card">
+<h2>Primary Phone</h2>
+<p>Enter the pairing code received from the other phone.</p>
+<input id="pairInput" placeholder="Enter Pairing Code">
+<input id="deviceName" placeholder="Device Name">
+<button onclick="redeemCode()">Connect Device</button>
+<div id="pairResult"></div>
+</div>
+</div>
+</section>
+</main>
+
+<script>
+const SUPABASE_URL = "https://crzxuxcffqgrqntjrxod.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Kxsql_aPZEknvC2mEHEG1Q_jt_gVFzj";
+
+const db = window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let currentUser = null;
+
+async function login(){
+ const email=document.getElementById("email").value.trim();
+ const password=document.getElementById("password").value;
+ const msg=document.getElementById("loginMsg");
+ msg.textContent="Logging in...";
+ const {data,error}=await db.auth.signInWithPassword({email,password});
+ if(error){msg.textContent=error.message;return;}
+ await showDashboard(data.user);
+}
+
+async function showDashboard(user){
+ currentUser=user;
+ document.getElementById("login").classList.add("hidden");
+ document.getElementById("dashboard").classList.remove("hidden");
+ document.getElementById("userInfo").textContent=user.email;
+
+ const {data:profile,error}=await db.from("profiles")
+ .select("role").eq("id",user.id).maybeSingle();
+
+ if(error){
+  document.getElementById("roleInfo").textContent="Profile error: "+error.message;
+  return;
+ }
+
+ const role=profile?.role;
+ document.getElementById("roleInfo").textContent="Role: "+(role||"Not assigned");
+
+ if(role==="admin"){
+  document.getElementById("adminPanel").classList.remove("hidden");
+  loadRequests();
+ }else{
+  document.getElementById("secondaryPanel").classList.remove("hidden");
+  document.getElementById("primaryPanel").classList.remove("hidden");
+ }
+}
+
+async function logout(){
+ await db.auth.signOut();
+ location.reload();
+}
+
+async function createPairCode(){
+ const box=document.getElementById("pairCode");
+ box.textContent="Creating code...";
+ const {data,error}=await db.rpc("create_device_pair_code");
+ if(error){box.textContent=error.message;return;}
+ box.innerHTML="<h2>Pairing Code</h2><pre>"+escapeHtml(JSON.stringify(data,null,2))+"</pre>";
+}
+
+async function redeemCode(){
+ const code=document.getElementById("pairInput").value.trim();
+ const name=document.getElementById("deviceName").value.trim()||"ZONO Device";
+ const box=document.getElementById("pairResult");
+ if(!code){box.textContent="Enter pairing code";return;}
+ box.textContent="Connecting...";
+ const {data,error}=await db.rpc("redeem_device_pair_code",{
+  p_code:code,
+  p_device_name:name
+ });
+ box.textContent=error?error.message:JSON.stringify(data);
+}
+
+async function loadRequests(){
+ const box=document.getElementById("requests");
+ box.textContent="Loading...";
+ const {data,error}=await db.from("connection_requests")
+ .select("*").eq("requested_to_user_id",currentUser.id)
+ .eq("status","pending");
+ if(error){box.textContent=error.message;return;}
+ box.innerHTML="";
+ if(!data.length){box.textContent="No pending requests";return;}
+ data.forEach(r=>{
+  const item=document.createElement("div");
+  item.className="card";
+  item.innerHTML="<p>Request ID: "+escapeHtml(r.id)+"</p>";
+  const yes=document.createElement("button");
+  yes.textContent="Approve";
+  yes.onclick=()=>decide(r.id,"approved");
+  const no=document.createElement("button");
+  no.textContent="Reject";
+  no.className="secondary";
+  no.onclick=()=>decide(r.id,"rejected");
+  item.append(yes,no);
+  box.append(item);
+ });
+}
+
+async function decide(id,decision){
+ const {data,error}=await db.rpc("admin_decide_connection_request",{
+  p_request_id:id,
+  p_decision:decision
+ });
+ alert(error?error.message:"Request "+decision);
+ loadRequests();
+}
+
+function escapeHtml(value){
+ return String(value).replace(/[&<>"']/g,c=>({
+  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+ }[c]));
+}
+
+db.auth.getSession().then(({data})=>{
+ if(data.session) showDashboard(data.session.user);
+});
+</script>
+</body>
+  </html>
